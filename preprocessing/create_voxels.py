@@ -11,6 +11,8 @@ from typing import Dict
 from Bio.PDB import PDBParser, PDBIO, Select
 from Bio.PDB.Polypeptide import is_aa
 
+from utils import unzip_file
+
 
 class ProteinSelect(Select):
     """Selects only residues belonging to a protein when parsing PDB files."""
@@ -26,13 +28,6 @@ def load_and_save_protein(input_pdb, output_pdb):
     io = PDBIO()
     io.set_structure(structure)
     io.save(output_pdb, ProteinSelect())
-
-
-def unzip_file(file_path: str, output_path: str) -> None:
-    """Unizps a file and saves the result to a given output path."""
-    with gzip.open(file_path, "rb") as f_in:
-        with open(output_path, "wb") as f_out:
-            shutil.copyfileobj(f_in, f_out)
 
 
 def voxelize_preprocessed_pdb(pdb_path: str) -> Dict[str, np.ndarray]:
