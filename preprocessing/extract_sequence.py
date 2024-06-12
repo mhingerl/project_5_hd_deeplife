@@ -24,7 +24,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Extracts the sequence from a (zipped) pdb file."
     )
-    parser.add_argument("pdb_path", type=str, help="Path to the pdb file.")
+    parser.add_argument("--pdb_path", type=str, help="Path to the pdb file.")
     parser.add_argument(
         "--output_path",
         type=str,
@@ -33,10 +33,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     seqs = []
-    for pdb_path in Path(args.pdb_path).rglob("*.pdb"):
+    for pdb_path in Path(args.pdb_path).rglob("*.pdb.gz"):
+        if pdb_path.stem.startswith("._"):
+            continue
         logger.info(f"Extracting sequence from {pdb_path}")
-        sequence = extract_sequence(args.pdb_path)
-        result = dict(pdb_id=pdb_path.stem)
+        sequence = extract_sequence(str(pdb_path))
+        result = dict(pdb_id=pdb_path.stem[:-4])
         result.update(sequence)
         seqs.append(result)
 
