@@ -9,9 +9,11 @@ Example:
 
 import argparse
 import gc
+import json
 from pathlib import Path
 from tqdm import tqdm
 import re
+from collections import defaultdict
 
 from loguru import logger
 import numpy as np
@@ -25,7 +27,7 @@ from transformers import T5EncoderModel, T5Tokenizer
 from utils import subset_embeddings_with_attention_mask, ProteinDataset
 
 
-def toknize_ankh(tokenizer, sequences):
+def tokenize_ankh(tokenizer, sequences):
     """Tokenizes protein sequences using ankh tokenizer."""
     protein_sequences = [list(seq) for seq in sequences]
     outputs = tokenizer.batch_encode_plus(
@@ -67,6 +69,31 @@ def load_model(model_name):
     return tokenizer, model
 
 
+def chunk_sequence(sequence, chunk_size, stride):
+    """
+    Splits a sequence into overlapping chunks.
+    
+    Args:
+        sequence (str): The protein sequence.
+        chunk_size (int): The size of each chunk.
+        stride (int): The number of residues to move between chunks.
+        
+    Returns:
+        list: A list of sequence chunks.
+    """
+    chunk_info = []
+    for i in range(0, len(sequence), stride):
+        start_idx = i
+        end_idx = i + chunk_size
+        if end_idx > len(sequence):
+            end_idx = len(sequence)
+        chunk = sequence[start_idx : end_idx]
+        chunk_info.append(
+            (start_idx, end_idx, chunk)
+        )
+    return chunk_info
+
+
 def embed_protein(model, tokenizer, data_loader: dict[str, str], model_name: str):
     """
     Embeds protein sequences using ankh model.
@@ -77,11 +104,20 @@ def embed_protein(model, tokenizer, data_loader: dict[str, str], model_name: str
     Returns:
         embeddings: torch.Tensor of embeddings.
     """
-    for i, (filenames, sequences) in enumerate(data_loader):
+    for i, data in enumerate(data_loader):
+        chunked_data = []
+        raw_chunks = []
+        data = zip(*data)
+        for filename, sequence in data:
+            chunk_info = chunk_sequence(sequence, 512, 256)
+            for start_idx, end_idx, chunk in chunk_info:
+                chunked_data.append((filename, start_idx, end_idx, len(sequence)))
+                raw_chunks.append(chunk)
+
         if model_name == "ankh":
-            input_ids, attention_mask = toknize_ankh(tokenizer, sequences)
+            input_ids, attention_mask = tokenize_ankh(tokenizer, raw_chunks)
         elif model_name == "t5":
-            input_ids, attention_mask = tokenize_t5(tokenizer, sequences)
+            input_ids, attention_mask = tokenize_t5(tokenizer, raw_chunks)
         else:
             raise ValueError(
                 f"Model {model_name} not supported. Use either ankh or t5."
@@ -101,6 +137,23 @@ def embed_protein(model, tokenizer, data_loader: dict[str, str], model_name: str
             embeddings, attention_mask
         )
 
+        averaged_embeddings = defaultdict(list)
+        for i, (filename, start_idx, end_idx, seq_len) in enumerate(chunked_data):
+            # [seq_len, hidden_size]
+            chunk_embed = np.full((seq_len, final_embeddings[i].shape[1]), np.nan)
+            chunk_embed[start_idx:end_idx] = final_embeddings[i]
+            averaged_embeddings[filename].append(chunk_embed)
+
+        final_embeddings = []
+        filenames = []
+        for filename, chunks in averaged_embeddings.items():
+            emb = np.stack(chunks, axis=0)
+            emb = np.nanmean(emb, axis=0)
+            filenames.append(filename)
+            
+        input_ids.detach().cpu()
+        attention_mask.detach().cpu()
+        embeddings.detach().cpu()
         del input_ids, attention_mask, embeddings
         gc.collect()
         torch.cuda.empty_cache()
@@ -111,25 +164,31 @@ def embed_protein(model, tokenizer, data_loader: dict[str, str], model_name: str
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--input_sequences", type=str, help="Path to input file.")
-    parser.add_argument("--output_dir", type=str, help="Path to output directory.")
-    parser.add_argument("--model", type=str, help="Model to use (ankh or t5).")
+    parser.add_argument("--input_sequences", type=str, default="pdb_bullshit/extracted_sequences/apo_sc_seqs.json", help="Path to input file.")
+    parser.add_argument("--output_dir", type=str, default="pdb_bullshit/ankh_test_embeddings", help="Path to output directory.")
+    parser.add_argument("--model", type=str, default="ankh", help="Model to use (ankh or t5).")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size.")
+    parser.add_argument("--mode", type=str, default="json", help="Mode to read input file (json or fasta).")
 
     args = parser.parse_args()
 
     logger.info(f"Reading protein sequences from {args.input_sequences}.")
-    df = pd.read_csv(args.input_sequences)
 
-    sequences = dict()
-    for protein_id, protein in df.iterrows():
-        protein.dropna(inplace=True)
-        protein = protein.to_dict()
-        for chain, sequence in protein.items():
-            sequences[f"{protein_id}_{chain}"] = sequence
+    model_input = dict()
+    if args.mode == "json":
+        with open(args.input_sequences) as f:
+            sequences = json.load(f)
+
+        for protein_chain in sequences:
+            model_input[f"{protein_chain["pdb_id"]}_{protein_chain["chain"]}"] = protein_chain["sequence"]
+    elif args.mode == "fasta":
+        for file in Path(args.input_sequences).rglob("*.fasta"):
+            with open(file) as f:
+                content = f.readlines()
+                model_input[file.stem] = "".join([line.strip() for line in content[1:]])
 
     protein_loader = DataLoader(
-        ProteinDataset(sequences), batch_size=args.batch_size, shuffle=False
+        ProteinDataset(model_input), batch_size=args.batch_size, shuffle=False
     )
 
     tokenizer, model = load_model(args.model)
