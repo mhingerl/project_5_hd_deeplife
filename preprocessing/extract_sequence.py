@@ -70,17 +70,14 @@ if __name__ == "__main__":
 
     seqs = []
     for pdb_path in Path(args.pdb_path).rglob("*.pdb.gz"):
-        # # TODO: rm only for debugging
-        if not pdb_path.stem.startswith("1"):
-            continue
         if pdb_path.stem.startswith("._"):
             continue
         logger.info(f"Extracting sequence from {pdb_path}")
-        # try:
-        chain_sequences = extract_sequence(str(pdb_path))
-        seqs.extend(chain_sequences)
-        # except Exception as e:
-        # logger.error(f"Failed to extract sequence from {pdb_path}: {e}")
+        try:
+            chain_sequences = extract_sequence(str(pdb_path))
+            seqs.extend(chain_sequences)
+        except Exception as e:
+            logger.error(f"Failed to extract sequence from {pdb_path}: {e}")
 
     with open(Path(args.output_path), "w") as f:
         json.dump(seqs, f)
