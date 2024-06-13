@@ -40,6 +40,8 @@ def subset_embeddings_with_attention_mask(
     Returns:
         embeddings: torch.Tensor of embeddings.
     """
+    all_seqs = []
     for i in range(attention_mask.shape[0]):
         sequence_w_eos = embeddings[i, attention_mask[i] == 1]
-        return sequence_w_eos[:-1].cpu().numpy()
+        all_seqs.append(sequence_w_eos[:-1].cpu().numpy())
+    return all_seqs
