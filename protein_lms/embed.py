@@ -149,6 +149,7 @@ def embed_protein(model, tokenizer, data_loader: dict[str, str], model_name: str
         for filename, chunks in averaged_embeddings.items():
             emb = np.stack(chunks, axis=0)
             emb = np.nanmean(emb, axis=0)
+            final_embeddings.append(emb)
             filenames.append(filename)
             
         input_ids.detach().cpu()
