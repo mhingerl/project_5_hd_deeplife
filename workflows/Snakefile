@@ -1,0 +1,19 @@
+# extracts sequences and residue ids from (zipped) pdb files
+from pathlib import Path
+
+input_dir = Path("/workspace/pdb_bullshit/pdb_files")
+subfolders = [d for d in input_dir.iterdir() if d.is_dir()]
+
+rule all:
+    input:
+        expand("pdb_bullshit/extracted_sequences/{folder}_seqs.json", folder=[d.name for d in subfolders])
+
+rule extract_sequence:
+    input:
+        pdb_path=lambda wildcards: input_dir / wildcards.folder
+    output:
+        output_path="pdb_bullshit/extracted_sequences/{folder}_seqs.json"
+    shell:
+        """
+        python project_5_hd_deeplife/preprocessing/extract_sequence.py --pdb_path {input.pdb_path} --output_path {output.output_path}
+        """
