@@ -43,7 +43,7 @@ if __name__ == "__main__":
             sections = proteins[protein]
             for section in sections:
                 residues = section["apo_pocket_selection"]
-                chains = [residue[0] for residue in residues]
+                chains = [residue.split("_")[0] for residue in residues]
                 unique_chains = np.unique(chains)
 
                 if uniprotIDs != section["uniprot_id"]:
