@@ -32,9 +32,10 @@ def extract_protein_sequence(pdb_file):
                     residue.id[0] == " "
                 ):  # Ensures only standard residues (ignores HETATM)
                     res_id = residue.id[1]
+                    res_icode = residue.id[2]
                     res_name = seq1(residue.resname)
                     sequence.append(res_name)
-                    residue_ids.append(res_id)
+                    residue_ids.append(f"{res_id}{res_icode}".strip())
 
             protein_sequences.append(
                 {
