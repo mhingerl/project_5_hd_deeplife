@@ -1,10 +1,9 @@
 import hashlib
-from tqdm import tqdm
+import json
 from loguru import logger
+from tqdm import tqdm
 
 import numpy as np
-import json
-
 from Bio import pairwise2
 
 
@@ -15,13 +14,13 @@ def get_pdb_info_search_idx(extracted_info) -> dict:
     return search_index
 
 
-def get_pocket_residues(entry, chain) -> list:
-    pocket_ids = [resid.split("_") for resid in entry["holo_pocket_selection"]]
+def get_pocket_residues(entry, chain, mode="holo") -> list:
+    pocket_ids = [resid.split("_") for resid in entry[f"{mode}_pocket_selection"]]
     pocket_ids = [resid[1] for resid in pocket_ids if resid[0] == chain]
     return pocket_ids
 
 
-def process_sequence_dataset(split_annotations, extracted_info, embeddings_path, fasta_path):
+def process_sequence_dataset(split_annotations, extracted_info, embeddings_path, fasta_path, mode="holo"):
     Xs = {}
     Ys = {}
     search_idx = get_pdb_info_search_idx(extracted_info)
@@ -33,7 +32,9 @@ def process_sequence_dataset(split_annotations, extracted_info, embeddings_path,
             holo_chain = holo_entry["holo_chain"]
             apo_chain = holo_entry["apo_chain"]
             uniprot_id = holo_entry["uniprot_id"]
-            pocket_ids = get_pocket_residues(holo_entry, holo_chain)
+
+            pocket_chain = holo_chain if mode == "holo" else apo_chain
+            pocket_ids = get_pocket_residues(holo_entry, pocket_chain, mode=mode)
 
             identifier = f"{apo_pdb_id}_{uniprot_id}_{"".join(pocket_ids)}"
             result = hashlib.md5(identifier.encode())
@@ -59,15 +60,23 @@ def process_sequence_dataset(split_annotations, extracted_info, embeddings_path,
                 content = f.readlines()
                 fasta_sequence = "".join([line.strip() for line in content[1:]])
 
+            # NOTE: one more edge case, lol
+            if fasta_sequence == "":
+                logger.warning(f"Fasta {fasta_file} is empty.")
+                continue
+
             # load embedding
             embedding_file = embeddings_path / f"{seq_id_string}.npy"
             embedding = np.load(embedding_file)
 
             # load extracted pdb seqs
             try:
-                entry_id = search_idx[f"{holo_pdb_id}_{holo_chain}"]
+                pdb_id = holo_pdb_id if mode == "holo" else apo_pdb_id
+                chain = holo_chain if mode == "holo" else apo_chain
+                entry_id = search_idx[f"{pdb_id}_{chain}"]
             except KeyError:
-                logger.error(f"pdb file {holo_pdb_id} does not exist :(")
+                pass
+                # logger.error(f"pdb file {holo_pdb_id} does not exist :(")
 
             pdb_info = extracted_info[entry_id]
 
@@ -106,7 +115,7 @@ def process_sequence_dataset(split_annotations, extracted_info, embeddings_path,
             Xs[checksum] = filtered_embedding
             Ys[checksum] = labels
 
-    logger.info(f"Fake data points: {fake_data_point_counter}")
+    # logger.info(f"Fake data points: {fake_data_point_counter}")
     return Xs, Ys
 
 
@@ -115,7 +124,7 @@ if __name__ == "__main__":
     with open("/workspace/CryptoBench/single_chain/train/train-fold-0.json") as f:
         split_annotations = json.load(f)
 
-    with open("/workspace/pdb_bullshit/extracted_sequences/holo_sc_seqs.json") as f:
+    with open("/workspace/pdb_bullshit/extracted_sequences/apo_sc_seqs.json") as f:
         extracted_info = json.load(f)
 
     Xs_train, Ys_train = process_sequence_dataset(
@@ -123,6 +132,7 @@ if __name__ == "__main__":
         extracted_info=extracted_info,
         embeddings_path=Path("/workspace/uniprot_embeddings/ankh/sc"),
         fasta_path=Path("/workspace/fastas/sc"),
+        mode="apo"
     )
     logger.info(f"Train set: {len(Xs_train)}")
 
