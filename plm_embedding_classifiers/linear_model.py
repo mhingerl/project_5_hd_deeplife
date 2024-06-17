@@ -80,24 +80,27 @@ def train(model, optimizer, loss_fn, train_loader):
     model.train()
 
     losses_epoch = []
+    auc_epoch = []
     for X_train, y_train in train_loader:
         X_train, y_train = X_train.to(device), y_train.to(device)
         y_train = y_train.float()
         y_logits = model(X_train)
         loss = loss_fn(y_logits, y_train)
         losses_epoch.append(loss.item())
+        auc_epoch.append(get_roc_auc(y_train.detach(), y_logits.detach()))
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-    return model, optimizer, np.array(losses_epoch).mean()
+    return model, optimizer, np.array(losses_epoch).mean(), np.array(auc_epoch).mean()
 
 
 def eval(model, loss_fn, test_loader):
     """Evaluate model on test set"""
     model.eval()
     test_losses = []
+    auc_epoch = []
 
     for X_test, y_test in test_loader:
         with torch.no_grad():
@@ -106,92 +109,130 @@ def eval(model, loss_fn, test_loader):
             y_logits = model(X_test)
             test_loss = loss_fn(y_logits, y_test)
             test_losses.append(test_loss.item())
+            auc_epoch.append(get_roc_auc(y_test, y_logits))
 
-    return np.array(test_losses).mean()
+    return np.array(test_losses).mean(), np.array(auc_epoch).mean()
+
+
+def save_sequence_dataset(
+    dataset_json, extracted_sequences_json, model, mode, save_path, file_prefix
+):
+    with open(f"/workspace/CryptoBench/single_chain/{dataset_json}") as f:
+        split_annotations = json.load(f)
+
+    with open(
+        f"/workspace/pdb_bullshit/extracted_sequences/{extracted_sequences_json}"
+    ) as f:
+        extracted_info = json.load(f)
+
+    X_test, Y_test = process_sequence_dataset(
+        split_annotations=split_annotations,
+        extracted_info=extracted_info,
+        embeddings_path=Path(f"/workspace/uniprot_embeddings/{model}/sc"),
+        fasta_path=Path("/workspace/fastas/sc"),
+        mode=mode,
+    )
+
+    test_dataset = SequenceDataset(X_test, Y_test)
+    test_xs, test_ys = test_dataset[:]
+    save_path.mkdir(exist_ok=True, parents=True)
+    np.save(save_path / f"{file_prefix}_xs.npy", test_xs.numpy())
+    np.save(save_path / f"{file_prefix}_ys.npy", test_ys.numpy())
+
+
+def get_roc_auc(y, logits):
+    fpr, tpr, thresholds = metrics.roc_curve(
+        y.cpu().numpy(), torch.sigmoid(logits).cpu().numpy()
+    )
+    roc_auc = metrics.auc(fpr, tpr)
+    return roc_auc
 
 
 if __name__ == "__main__":
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    torch.manual_seed(42)
+    from itertools import product
 
-    model = Embed2BindingSiteClassifier(
-        layers=[100, 100],
-        dropout=0.4,
-        out_features=1,
-    ).to(device)
+    models = ["ankh", "t5"]
+    folds = ["0", "1", "2", "3", "4"]
 
-    epochs = 20
+    for model_name, fold in product(models, folds):
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        torch.manual_seed(42)
 
-    # Create an optimizer
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=0.001)
+        model = Embed2BindingSiteClassifier(
+            layers=[100, 100],
+            dropout=0.4,
+            out_features=1,
+        ).to(device)
 
-    # with open("/workspace/CryptoBench/single_chain/train/train-fold-0.json") as f:
-    #     split_annotations = json.load(f)
+        epochs = 10
 
-    # with open("/workspace/pdb_bullshit/extracted_sequences/holo_sc_seqs.json") as f:
-    #     extracted_info = json.load(f)
+        # Create an optimizer
+        optimizer = torch.optim.Adam(params=model.parameters(), lr=0.001)
 
-    # X_train, Y_train = process_sequence_dataset(
-    #     split_annotations=split_annotations,
-    #     extracted_info=extracted_info,
-    #     embeddings_path=Path("/workspace/uniprot_embeddings/ankh/sc"),
-    #     fasta_path=Path("/workspace/fastas/sc"),
-    # )
-
-    # train_dataset = SequenceDataset(X_train, Y_train)
-
-    # with open("/workspace/CryptoBench/single_chain/test/test.json") as f:
-    #     split_annotations = json.load(f)
-
-    # with open("/workspace/pdb_bullshit/extracted_sequences/holo_sc_seqs.json") as f:
-    #     extracted_info = json.load(f)
-
-    # X_test, Y_test = process_sequence_dataset(
-    #     split_annotations=split_annotations,
-    #     extracted_info=extracted_info,
-    #     embeddings_path=Path("/workspace/uniprot_embeddings/ankh/sc"),
-    #     fasta_path=Path("/workspace/fastas/sc"),
-    # )
-
-    # test_dataset = SequenceDataset(X_test, Y_test)
-    # test_xs, test_ys = test_dataset[:]
-    # np.save("test_xs.npy", test_xs.numpy())
-    # np.save("test_ys.npy", test_ys.numpy())
-
-    test_dataset = SequenceDataset(None, None)
-    test_dataset.Xs = torch.tensor(np.load("test_xs.npy"))
-    test_dataset.Ys = torch.tensor(np.load("test_ys.npy"))
-    test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False)
-
-    train_dataset = SequenceDataset(None, None)
-    train_dataset.Xs = torch.tensor(np.load("train_xs_fold0.npy"))
-    train_dataset.Ys = torch.tensor(np.load("train_ys_fold0.npy"))
-    train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True)
-
-    # compute class weights (because the dataset is heavily imbalanced)
-
-    train_xs, train_ys = train_dataset[:]
-    # np.save("train_xs_fold0.npy", train_xs.numpy())
-    # np.save("train_ys_fold0.npy", train_ys.numpy())
-
-    _, train_ys = train_dataset[:]
-    class_weights = compute_class_weights(train_ys.numpy()).to(device)
-
-    # BCEWithLogitsLoss - sigmoid is already built-in!
-    loss_fn = nn.BCEWithLogitsLoss(pos_weight=class_weights[1])
-    train_losses = []
-    test_losses = []
-
-    train_loss = 0
-    test_loss = 0
-    pbar = tqdm(range(epochs))
-    for epoch in pbar:
-        pbar.set_description(
-            f"Epoch: {epoch}, Train Loss: {train_loss:.5f}, Test Loss: {test_loss}"
+        MODEL_DIR = Path("/workspace/sequence_datasets") / model_name
+        train_dataset = SequenceDataset(None, None)
+        train_dataset.Xs = torch.tensor(
+            np.load(MODEL_DIR / "holo" / f"train-fold-{fold}_xs.npy")
         )
-        pbar.refresh()
-        model, optimizer, train_loss = train(model, optimizer, loss_fn, train_loader)
-        test_loss = eval(model, loss_fn, test_loader)
+        train_dataset.Ys = torch.tensor(
+            np.load(MODEL_DIR / "holo" / f"train-fold-{fold}_ys.npy")
+        )
+        train_loader = DataLoader(train_dataset, batch_size=1048, shuffle=True)
 
-        train_losses.append(train_loss)
-        test_losses.append(test_loss)
+        test_dataset_holo = SequenceDataset(None, None)
+        test_dataset_holo.Xs = torch.tensor(np.load(MODEL_DIR / "holo" / "test_xs.npy"))
+        test_dataset_holo.Ys = torch.tensor(np.load(MODEL_DIR / "holo" / "test_ys.npy"))
+        test_loader_holo = DataLoader(test_dataset_holo, batch_size=1048, shuffle=False)
+
+        test_dataset_apo = SequenceDataset(None, None)
+        test_dataset_apo.Xs = torch.tensor(np.load(MODEL_DIR / "apo" / "test_xs.npy"))
+        test_dataset_apo.Ys = torch.tensor(np.load(MODEL_DIR / "apo" / "test_ys.npy"))
+        test_loader_apo = DataLoader(test_dataset_apo, batch_size=1048, shuffle=False)
+
+        # compute class weights (because the dataset is heavily imbalanced)
+        _, train_ys = train_dataset[:]
+        class_weights = compute_class_weights(train_ys.numpy()).to(device)
+
+        # BCEWithLogitsLoss - sigmoid is already built-in!
+        loss_fn = nn.BCEWithLogitsLoss(pos_weight=class_weights[1])
+        train_losses_arr = []
+        train_auc_arr = []
+        test_losses_holo_arr = []
+        test_auc_holo_arr = []
+        test_losses_apo_arr = []
+        test_auc_apo_arr = []
+
+        train_loss = 0
+        test_loss_holo = 0
+        test_loss_apo = 0
+        train_auc = 0
+        test_auc_holo = 0
+        test_auc_apo = 0
+        pbar = tqdm(range(epochs))
+        for epoch in pbar:
+            pbar.set_description(
+                f"Epoch: {epoch}, Train Loss: {train_loss:.5f}, Test Loss: {test_loss_holo:.5f}"
+                f"Train AUC: {train_auc:.5f}, Test AUC: {test_auc_holo:.5f}"
+            )
+            pbar.refresh()
+            model, optimizer, train_loss, train_auc = train(
+                model, optimizer, loss_fn, train_loader
+            )
+            test_loss_holo, test_auc_holo = eval(model, loss_fn, test_loader_holo)
+            test_loss_apo, test_auc_apo = eval(model, loss_fn, test_loader_apo)
+
+            train_losses_arr.append(train_loss)
+            train_auc_arr.append(train_auc)
+            test_losses_holo_arr.append(test_loss_holo)
+            test_auc_holo_arr.append(test_auc_holo)
+            test_losses_apo_arr.append(test_loss_apo)
+            test_auc_apo_arr.append(test_auc_apo)
+
+            OUTDIR = Path("/workspace/plm_evals") / model_name
+            OUTDIR.mkdir(exist_ok=True, parents=True)
+            np.save(OUTDIR / f"train_losses_fold{fold}.npy", train_losses_arr)
+            np.save(OUTDIR / f"train_auc_fold{fold}.npy", train_auc_arr)
+            np.save(OUTDIR / f"test_losses_holo_fold{fold}.npy", test_losses_holo_arr)
+            np.save(OUTDIR / f"test_auc_holo_fold{fold}.npy", test_auc_holo_arr)
+            np.save(OUTDIR / f"test_losses_apo_fold{fold}.npy", test_losses_apo_arr)
+            np.save(OUTDIR / f"test_auc_apo_fold{fold}.npy", test_auc_apo_arr)
